@@ -1,22 +1,8 @@
-// routes/index.js (예시)
-// 플랫폼이 요구하는 Router 형식(CommonJS)으로 변환본
-
+// routes/index.js
 var express = require("express");
 var jwt = require("jsonwebtoken");
-var cookieParser = require("cookie-parser");
-var cors = require("cors");
 
 var router = express.Router();
-
-// ✅ 원래 app.use(...) 하던 것들을 router 레벨로 적용
-router.use(express.json());
-router.use(cookieParser());
-router.use(
-  cors({
-    origin: "http://localhost:3000",
-    credentials: true,
-  })
-);
 
 // =========================
 // 메모리 기반 저장소 (DB 대신)
@@ -54,14 +40,13 @@ function signRefreshToken(userId) {
   });
 }
 
-// 토큰 쿠키 세팅 헬퍼
 function setAuthCookies(res, userId) {
   const accessToken = signAccessToken(userId);
   const refreshToken = signRefreshToken(userId);
 
   res.cookie("access_token", accessToken, {
     httpOnly: true,
-    secure: false, // 실제 서비스에서는 true + HTTPS 권장
+    secure: false,
     sameSite: "lax",
     path: "/",
   });
@@ -75,17 +60,16 @@ function setAuthCookies(res, userId) {
 }
 
 // =========================
-// 인증 미들웨어 (access 만료 시 refresh로 재발급 후 통과)
+// 미들웨어
 // =========================
 function authMiddleware(req, res, next) {
-  const accessToken = req.cookies.access_token;
-  const refreshToken = req.cookies.refresh_token;
+  const accessToken = req.cookies?.access_token;
+  const refreshToken = req.cookies?.refresh_token;
 
   if (!accessToken && !refreshToken) {
     return res.status(401).json({ message: "No token" });
   }
 
-  // 1) access token 먼저 검증
   if (accessToken) {
     try {
       const payload = jwt.verify(accessToken, ACCESS_TOKEN_SECRET);
@@ -93,14 +77,11 @@ function authMiddleware(req, res, next) {
       return next();
     } catch (e) {
       if (e.name !== "TokenExpiredError") {
-        console.error("Access token verify error:", e);
         return res.status(401).json({ message: "Invalid token" });
       }
-      console.log("Access token expired, trying refresh...");
     }
   }
 
-  // 2) access 없거나 만료 → refresh 확인
   if (!refreshToken) {
     return res.status(401).json({ message: "No refresh token" });
   }
@@ -119,7 +100,6 @@ function authMiddleware(req, res, next) {
     }
 
     const newAccessToken = signAccessToken(userId);
-
     res.cookie("access_token", newAccessToken, {
       httpOnly: true,
       secure: false,
@@ -130,65 +110,9 @@ function authMiddleware(req, res, next) {
     req.user = { id: userId };
     return next();
   } catch (e) {
-    console.error("Refresh token verify error:", e);
-
     res.clearCookie("access_token", { path: "/" });
     res.clearCookie("refresh_token", { path: "/" });
-
     return res.status(401).json({ message: "Invalid refresh token" });
-  }
-}
-
-// 선택적 인증 미들웨어 (실패해도 401 없이 진행)
-function optionalAuthMiddleware(req, res, next) {
-  const accessToken = req.cookies.access_token;
-  const refreshToken = req.cookies.refresh_token;
-
-  if (!accessToken && !refreshToken) return next();
-
-  if (accessToken) {
-    try {
-      const payload = jwt.verify(accessToken, ACCESS_TOKEN_SECRET);
-      req.user = { id: payload.sub };
-      return next();
-    } catch (e) {
-      if (e.name !== "TokenExpiredError") {
-        console.error("optionalAuth access verify error:", e);
-        return next();
-      }
-      console.log("optionalAuth: access expired, trying refresh...");
-    }
-  }
-
-  if (!refreshToken) return next();
-
-  try {
-    const refreshPayload = jwt.verify(refreshToken, REFRESH_TOKEN_SECRET);
-    const userId = refreshPayload.sub;
-
-    const user = users.find((u) => u.id === userId);
-    if (!user) {
-      res.clearCookie("access_token", { path: "/" });
-      res.clearCookie("refresh_token", { path: "/" });
-      return next();
-    }
-
-    const newAccessToken = signAccessToken(userId);
-
-    res.cookie("access_token", newAccessToken, {
-      httpOnly: true,
-      secure: false,
-      sameSite: "lax",
-      path: "/",
-    });
-
-    req.user = { id: userId };
-    return next();
-  } catch (e) {
-    console.error("optionalAuth refresh verify error:", e);
-    res.clearCookie("access_token", { path: "/" });
-    res.clearCookie("refresh_token", { path: "/" });
-    return next();
   }
 }
 
@@ -198,8 +122,10 @@ function optionalAuthMiddleware(req, res, next) {
 
 /* GET home page. */
 router.get("/", function (req, res, next) {
-  // 플랫폼이 res.render를 강제하면 아래처럼 바꿔도 됩니다:
-  // return res.render("index.html");
+  // 기존 템플릿 렌더링을 쓰고 싶으면:
+  // return res.render('index');
+
+  // 지금은 API처럼 응답:
   return res.json("Hello, World");
 });
 
@@ -221,7 +147,7 @@ router.post("/auth/signup", function (req, res) {
   const newUser = {
     id: `user-${users.length + 1}`,
     email,
-    password, // 데모용. 실제 서비스에서는 해시 필수.
+    password,
     name,
   };
 
@@ -251,38 +177,7 @@ router.post("/auth/login", function (req, res) {
   return res.json({ ok: true });
 });
 
-// 토큰 재발급 (별도 엔드포인트)
-router.post("/auth/refresh", function (req, res) {
-  const refreshToken = req.body?.refreshToken; // 또는 req.cookies.refresh_token
-
-  if (!refreshToken) {
-    return res.status(401).json({ message: "No refresh token" });
-  }
-
-  try {
-    const payload = jwt.verify(refreshToken, REFRESH_TOKEN_SECRET);
-    const userId = payload.sub;
-
-    const user = users.find((u) => u.id === userId);
-    if (!user) return res.status(401).json({ message: "User not found" });
-
-    const newAccessToken = signAccessToken(userId);
-
-    res.cookie("access_token", newAccessToken, {
-      httpOnly: true,
-      secure: false,
-      sameSite: "lax",
-      path: "/",
-    });
-
-    return res.json({ accessToken: newAccessToken });
-  } catch (e) {
-    console.error("Refresh token verify error:", e);
-    return res.status(401).json({ message: "Invalid refresh token" });
-  }
-});
-
-// 현재 로그인한 유저 정보
+// 현재 로그인 유저
 router.get("/me", authMiddleware, function (req, res) {
   const user = users.find((u) => u.id === req.user?.id);
   if (!user) return res.status(404).json({ message: "User not found" });
@@ -297,26 +192,22 @@ router.post("/auth/logout", function (req, res) {
   return res.json({ ok: true });
 });
 
-// 글 작성 (인증된 사용자만)
+// 글 작성
 router.post("/posts", authMiddleware, function (req, res) {
   const { title, content } = req.body || {};
-
   if (!title || !content) {
     return res.status(400).json({ message: "title과 content는 필수입니다." });
   }
-
-  const authorId = req.user.id;
 
   const newPost = {
     id: postIdSeq++,
     title,
     content,
-    authorId,
+    authorId: req.user.id,
     createdAt: new Date().toISOString(),
   };
 
   posts.unshift(newPost);
-
   return res.status(201).json({ ok: true, post: newPost });
 });
 
